@@ -1,5 +1,32 @@
 use std::f32::consts::PI;
 
+use image::GenericImageView;
+
+mod colour_space;
+use colour_space::{linear_to_s_rgb, s_rgb_to_linear, sign_pow};
+
+mod encoder;
+use encoder::{encode_ac, encode_dc};
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let img = image::open("test/pic1.png")?;
+    let (width, height) = img.dimensions();
+    let bytes_per_row = width * 3;
+
+    // img.as_bytes();
+    let rgb_pixels = img.to_rgb8().into_raw();
+
+    dbg!(blur_hash_for_pixels(
+        (4, 3),
+        width as usize,
+        height as usize,
+        &rgb_pixels,
+        bytes_per_row as usize,
+    ));
+
+    Ok(())
+}
+
 const NUM_CHANNELS: usize = 3;
 const CHARACTERS: &[char] = &[
     '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I',
@@ -23,35 +50,8 @@ fn encode_int(value: u32, length: usize, destination: &mut String) {
     }
 }
 
-fn linear_to_s_rgb(value: f32) -> u32 {
-    let v = f32::max(0.0, f32::min(1.0, value)); // TODO: clamp
-    if v <= 0.0031308 {
-        (v * 12.92 * 255.0 + 0.5) as u32
-    } else {
-        ((1.055 * v.powf(1.0 / 2.4) - 0.055) * 255.0 + 0.5) as u32
-    }
-}
-
-fn s_rgb_to_linear(value: u8) -> f32 {
-    let v: f32 = value as f32 / 255.0;
-    if v <= 0.04045 {
-        v / 12.92
-    } else {
-        ((v + 0.055) / 1.055).powf(2.4)
-    }
-}
-
-fn sign_pow(value: f32, exp: f32) -> f32 {
-    value.abs().powf(exp).copysign(value)
-}
-
-fn main() {
-    println!("Hello, world!");
-}
-
 fn blur_hash_for_pixels(
-    x_components: usize, // TODO: usize
-    y_components: usize,
+    components: (usize, usize), // TODO: usize
     width: usize,
     height: usize,
     rgb: &[u8],
@@ -59,15 +59,15 @@ fn blur_hash_for_pixels(
 ) -> Option<String> {
     let buffer = &[0; 2 + 4 + (9 * 9 - 1) * 2 + 1];
 
-    if x_components < 1 || x_components > 9 || y_components < 1 || y_components > 9 {
+    if components.0 < 1 || components.0 > 9 || components.1 < 1 || components.1 > 9 {
         return None;
     }
 
     let mut factors: Vec<Vec<[f32; NUM_CHANNELS]>> =
-        vec![vec![[0.0; NUM_CHANNELS]; x_components]; y_components];
+        vec![vec![[0.0; NUM_CHANNELS]; components.0]; components.1];
 
-    for y in 0..(y_components as usize) {
-        for x in 0..(x_components as usize) {
+    for y in 0..(components.1 as usize) {
+        for x in 0..(components.0 as usize) {
             let factor = multiply_basis_function(x, y, width, height, rgb, bytes_per_row);
             factors[y][x][0] = factor[0];
             factors[y][x][1] = factor[1];
@@ -77,11 +77,11 @@ fn blur_hash_for_pixels(
 
     let dc = factors[0][0];
     let ac = factors[0][1];
-    let ac_count = x_components * y_components - 1;
+    let ac_count = components.0 * components.1 - 1;
 
     let mut ptr = String::with_capacity(2 + 4 + (9 * 9 - 1) * 2 + 1); // TODO: should be pointing to buffer
 
-    let size_flag = (x_components - 1) + (y_components - 1) * 9;
+    let size_flag = (components.0 - 1) + (components.1 - 1) * 9;
     encode_int(size_flag as u32, 1, &mut ptr);
 
     let maximum_value;
@@ -115,62 +115,32 @@ fn blur_hash_for_pixels(
     Some(ptr)
 }
 
-fn encode_dc(r: f32, g: f32, b: f32) -> u32 {
-    let (rounded_r, rounded_g, rounded_b) =
-        (linear_to_s_rgb(r), linear_to_s_rgb(g), linear_to_s_rgb(b));
-    (rounded_r << 16) + (rounded_g << 8) + rounded_b
-}
 
-fn encode_ac(r: f32, g: f32, b: f32, maximum_value: f32) -> u32 {
-    let (quant_r, quant_g, quant_b) = (
-        f32::max(
-            0.0,
-            f32::min(
-                18.0,
-                f32::floor(sign_pow(r / maximum_value, 0.5) * 9.0 + 9.5),
-            ),
-        ) as u32,
-        f32::max(
-            0.0,
-            f32::min(
-                18.0,
-                f32::floor(sign_pow(g / maximum_value, 0.5) * 9.0 + 9.5),
-            ),
-        ) as u32,
-        f32::max(
-            0.0,
-            f32::min(
-                18.0,
-                f32::floor(sign_pow(b / maximum_value, 0.5) * 9.0 + 9.5),
-            ),
-        ) as u32,
-    );
-    quant_r * 19 * 19 + quant_g * 19 + quant_b
-}
 
 fn multiply_basis_function(
-    x_component: usize,
-    y_component: usize,
+    components: (usize, usize),
     width: usize,
     height: usize,
-    rgb: &[u8],
+    pixels: &[u8],
     bytes_per_row: usize,
 ) -> [f32; NUM_CHANNELS] {
     let (mut r, mut g, mut b) = (0.0, 0.0, 0.0);
-    let normalisation: f32 = if x_component == 0 && y_component == 0 {
+    let normalisation: f32 = if components.0 == 0 && components.1 == 0 {
         0.0
     } else {
         2.0
     };
 
+    let basis_function = |x, y| -> f32::cos(PI * (components.0 as f32) * (x as f32) / (width as f32)) * f32::cos(PI * components.1 as f32 * y as f32 / height as f32);
+
     for y in 0..height {
         for x in 0..width {
-            let basis = f32::cos(PI * (x_component as f32) * (x as f32) / (width as f32))
-                * f32::cos(PI * y_component as f32 * y as f32 / height as f32);
+            let basis = f32::cos(PI * (components.0 as f32) * (x as f32) / (width as f32))
+                * f32::cos(PI * components.1 as f32 * y as f32 / height as f32);
 
-            r += basis * s_rgb_to_linear(rgb[3 * x + 0 + y * bytes_per_row].into());
-            g += basis * s_rgb_to_linear(rgb[3 * x + 1 + y * bytes_per_row].into());
-            b += basis * s_rgb_to_linear(rgb[3 * x + 2 + y * bytes_per_row].into());
+            r += basis * s_rgb_to_linear(pixels[3 * x + 0 + y * bytes_per_row].into());
+            g += basis * s_rgb_to_linear(pixels[3 * x + 1 + y * bytes_per_row].into());
+            b += basis * s_rgb_to_linear(pixels[3 * x + 2 + y * bytes_per_row].into());
         }
     }
 
