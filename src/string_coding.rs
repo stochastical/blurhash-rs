@@ -19,3 +19,5 @@ pub fn encode83(value: u32, length: usize, destination: &mut String) {
         destination.push(CHARACTERS[digit as usize]);
     }
 }
+
+// pub fn decode83()

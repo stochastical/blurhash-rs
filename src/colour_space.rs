@@ -9,6 +9,7 @@ pub fn linear_to_s_rgb(value: f32) -> u32 {
 }
 
 // Swift: sRGBToLinear<Type: BinaryInteger>(_ value: Type) -> Float
+// rename ttansfoems
 pub fn s_rgb_to_linear(value: u8) -> f32 {
     let v: f32 = value as f32 / 255.0;
     if v <= 0.04045 {

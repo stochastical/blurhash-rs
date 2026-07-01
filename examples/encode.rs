@@ -1,10 +1,6 @@
 use image::GenericImageView;
 
-mod string_coding;
-mod colour_space;
-mod encoder;
-
-use encoder::{encode};
+use blurhash_rs::encoder::encode;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let img = image::open("test/pic1.png")?;
